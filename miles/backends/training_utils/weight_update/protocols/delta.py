@@ -23,6 +23,7 @@ from miles.backends.training_utils.weight_update.protocol import WeightTransferP
 from miles.backends.training_utils.weight_update.protocols.utils.data_replica import get_data_replica_rank_and_size
 from miles.backends.training_utils.weight_update.rollout_cell_updater import create_rollout_cell_updaters
 from miles.backends.training_utils.weight_update.session import check_weight_sync_results
+from miles.platforms import current_platform
 from miles.utils import async_utils
 from miles.utils.args.custom_view import compute_custom_function_config
 from miles.utils.disk_delta import NUM_WORKERS, checksum, make_tensor_reader, overwrite_encode
@@ -141,7 +142,7 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
             if self._use_pinned and nbytes <= self._max_bytes:
                 buf = self._free_q.get()  # blocks when all buffers are in flight -> backpressures the gather
                 buf[:nbytes].copy_(flat, non_blocking=True)
-                torch.cuda.current_stream().synchronize()
+                torch.accelerator.current_stream().synchronize()
                 payload, pinned = buf, True
             else:
                 payload, pinned = flat.cpu().numpy(), False
@@ -415,7 +416,7 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
         counts = torch.tensor(
             [self.changed_bytes, self.total_bytes, self.wire_bytes],
             dtype=torch.int64,
-            device=torch.cuda.current_device(),
+            device=current_platform.current_device(),
         )
         dist.all_reduce(counts)
         changed, total, wire = counts.tolist()
