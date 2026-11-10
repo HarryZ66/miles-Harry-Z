@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from miles.backends.training_utils.weight_update.protocols.delta import UpdateWeightFromDiskDelta
+from miles.platforms import current_platform
 
 _DELTA_MODULE = "miles.backends.training_utils.weight_update.protocols.delta"
 
@@ -153,7 +154,7 @@ class TestDeltaPublicationLifecycle:
             patch(f"{_DELTA_MODULE}.dist") as distributed,
             patch(f"{_DELTA_MODULE}.get_gloo_group", return_value=None),
             patch.object(torch, "empty", side_effect=RuntimeError("CPU test has no pinned memory")),
-            patch.object(torch.cuda, "current_device", return_value="cpu"),
+            patch.object(current_platform, "current_device", return_value=torch.device("cpu")),
         ):
             distributed.get_rank.return_value = 0
             distributed.get_world_size.return_value = 1
@@ -171,3 +172,58 @@ class TestDeltaPublicationLifecycle:
 
         assert receiver.transport_version == 4
         assert receiver.served_versions == ["8", "8", "15", "2"]
+
+
+class TestDeviceNeutralTransfer:
+    """Disk-delta is the weight path for engines that share neither NCCL nor CUDA IPC with the trainer (e.g. Neuron),
+    so it must not reach for torch.cuda."""
+
+    def test_pinned_copy_waits_on_the_accelerator_stream_not_cuda(self) -> None:
+        import queue
+        from collections import deque
+
+        import torch
+
+        protocol = UpdateWeightFromDiskDelta.__new__(UpdateWeightFromDiskDelta)
+        protocol._use_pinned = True
+        protocol._max_bytes = 16
+        protocol._free_q = queue.Queue()
+        protocol._free_q.put(torch.empty(16, dtype=torch.uint8))
+        protocol._inflight = deque()
+        protocol._pool = MagicMock()
+        protocol.total_bytes = 0
+        stream = MagicMock()
+
+        with (
+            patch.object(torch.accelerator, "current_stream", return_value=stream),
+            patch.object(
+                torch.cuda, "current_stream", side_effect=AssertionError("disk-delta must not use torch.cuda")
+            ),
+        ):
+            protocol.send_bucket([("weight", torch.arange(8, dtype=torch.uint8))])
+
+        stream.synchronize.assert_called_once_with()
+        assert protocol.total_bytes == 8
+
+    def test_metrics_all_reduce_runs_on_the_platform_device(self) -> None:
+        import torch
+
+        protocol = UpdateWeightFromDiskDelta.__new__(UpdateWeightFromDiskDelta)
+        protocol.changed_bytes, protocol.total_bytes, protocol.wire_bytes = 2, 8, 4
+        protocol._snapshot_file_version = 1
+        devices = []
+
+        def fake_all_reduce(tensor, *args, **kwargs):
+            devices.append(tensor.device)
+
+        with (
+            patch.object(current_platform, "current_device", return_value=torch.device("cpu")),
+            patch.object(
+                torch.cuda, "current_device", side_effect=AssertionError("disk-delta must not use torch.cuda")
+            ),
+            patch(f"{_DELTA_MODULE}.dist") as distributed,
+        ):
+            distributed.all_reduce.side_effect = fake_all_reduce
+            protocol._record_metrics(weight_version=1)
+
+        assert devices == [torch.device("cpu")]
