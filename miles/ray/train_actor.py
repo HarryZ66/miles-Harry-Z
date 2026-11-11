@@ -242,7 +242,10 @@ class TrainRayActor(NodeProbeMixin):
             and args.backend.optimizer_cpu_offload
             and args.backend.fsdp_cpu_backend
         ):
-            backend = f"cpu:{args.backend.fsdp_cpu_backend},cuda:{args.backend.distributed_backend}"
+            backend = (
+                f"cpu:{args.backend.fsdp_cpu_backend},"
+                f"{current_platform.device_type}:{args.backend.distributed_backend}"
+            )
             logger.info(f"FSDP CPU offload enabled, using hybrid backend: {backend}")
 
         with override_env({"TORCH_NCCL_DUMP_ON_TIMEOUT": "0"} if args.indep_dp else {}):

@@ -8,6 +8,7 @@ import pytest
 import torch
 from tests.fast.fixtures.sglang_config_fixtures import make_sglang_config
 
+from miles.backends.fsdp_utils.adaptations import precision as precision_module
 from miles.backends.fsdp_utils.adaptations.precision import (
     apply_fp32_master,
     default_precision_policy,
@@ -149,6 +150,30 @@ def test_precision_forward_context_uses_policy_autocast(monkeypatch):
         pass
 
     assert entered == [("cuda", torch.bfloat16)]
+
+
+def test_precision_forward_context_autocasts_on_the_platform_device(monkeypatch):
+    """Autocast follows the platform's device type, so a Neuron trainer autocasts neuron tensors, not cuda ones."""
+    entered = []
+
+    @contextmanager
+    def fake_autocast(*, device_type, dtype):
+        entered.append((device_type, dtype))
+        yield
+
+    monkeypatch.setattr(torch, "autocast", fake_autocast)
+    monkeypatch.setattr(precision_module.current_platform, "device_type", "neuron")
+    policy = resolve_precision_policy(
+        SimpleNamespace(model_type="qwen3"),
+        _args(
+            fp16=False, keep_fp32_master=True, true_on_policy_mode=True, contract=QWEN3_DENSE_TRUE_ON_POLICY_V1.name
+        ),
+    )
+
+    with precision_forward_context(policy):
+        pass
+
+    assert entered == [("neuron", torch.bfloat16)]
 
 
 def test_apply_fp32_master_records_sync_dtypes_before_cast():

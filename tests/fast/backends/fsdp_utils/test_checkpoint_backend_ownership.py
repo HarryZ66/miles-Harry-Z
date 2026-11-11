@@ -95,3 +95,41 @@ class TestBackendCheckpointOwnership:
             assert actor.args.start_rollout_id == 3
         finally:
             torch.set_rng_state(original)
+
+
+class TestDeviceNeutralCheckpoint:
+    """The FSDP checkpoint keeps device RNG state through the platform, so a non-CUDA trainer never reaches torch.cuda."""
+
+    def test_save_without_device_rng_keeps_only_the_cpu_rng(
+        self, cpu_checkpoint_actor: SimpleNamespace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A platform that exposes no device RNG state (Neuron, for now) saves the CPU RNG alone."""
+        actor = cpu_checkpoint_actor
+        monkeypatch.setattr(checkpoint.current_platform, "device_type", "neuron")
+        monkeypatch.setattr(checkpoint.current_platform, "device_rng_state", lambda: None)
+        monkeypatch.setattr(torch.cuda, "get_rng_state_all", _fail_on_cuda)
+        monkeypatch.setattr(torch.cuda, "synchronize", _fail_on_cuda)
+
+        checkpoint.save(actor=actor, iteration=0)
+
+        assert set(torch.load(tmp_path / "iter_0000001" / "rng.pt")) == {"torch"}
+
+    def test_finalize_load_restores_device_rng_under_the_platform_device_type(
+        self, cpu_checkpoint_actor: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        actor = cpu_checkpoint_actor
+        restored = []
+        monkeypatch.setattr(checkpoint.current_platform, "device_type", "neuron")
+        monkeypatch.setattr(checkpoint.current_platform, "set_device_rng_state", restored.append)
+        monkeypatch.setattr(torch.cuda, "set_rng_state_all", _fail_on_cuda)
+        original = torch.get_rng_state()
+        device_state = [torch.zeros(4, dtype=torch.uint8)]
+        payload = {"rng": {"torch": original, "cuda": ["ignored"], "neuron": device_state}, "metadata": {}}
+
+        checkpoint.finalize_load(actor=actor, checkpoint_payload=payload)
+
+        assert restored == [device_state]
+
+
+def _fail_on_cuda(*args: object, **kwargs: object) -> None:
+    raise AssertionError("the FSDP checkpoint must not use torch.cuda")

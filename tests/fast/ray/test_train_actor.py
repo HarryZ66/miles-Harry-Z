@@ -494,6 +494,34 @@ class TestBackendProcessGroupSdk:
         gloo_group.assert_called_once_with(backend="gloo")
         assert (args.backend.rank, args.backend.world_size) == (3, 8)
 
+    def test_hybrid_cpu_offload_backend_names_the_platform_device(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The device half of the CPU-offload backend follows the platform, so a non-CUDA trainer never asks for cuda."""
+        args = make_trainer_config(
+            train_backend="fsdp",
+            distributed_backend="neuron_ccl",
+            distributed_timeout_minutes=17,
+            optimizer_cpu_offload=True,
+            fsdp_cpu_backend="gloo",
+            debug_deterministic_collective=False,
+        )
+        actor = _ActorWithoutReloadSupport.__new__(_ActorWithoutReloadSupport)
+        actor._init_once = InitOnce("TrainRayActor")
+        actor._heartbeat = SimpleNamespace(bump=lambda: None)
+        initialize_group = Mock()
+        monkeypatch.setattr(train_actor.current_platform, "device_type", "neuron")
+        monkeypatch.setattr(train_actor.current_platform, "nvml_numa_affinity", False)
+        monkeypatch.setattr(train_actor.current_platform, "bind_device_before_process_group", lambda _rank: None)
+        monkeypatch.setattr(train_actor.dist, "init_process_group", initialize_group)
+        monkeypatch.setattr(train_actor.dist, "new_group", Mock())
+        monkeypatch.setattr(train_actor.dist, "get_rank", lambda: 0)
+        monkeypatch.setattr(train_actor.dist, "get_world_size", lambda: 1)
+        monkeypatch.setattr(distributed_utils, "GLOO_GROUP", None)
+        monkeypatch.setattr(logging_utils, "_ENV_REPORTER", None)
+
+        actor._init_common(args=args, role="actor")
+
+        initialize_group.assert_called_once_with(backend="cpu:gloo,neuron:neuron_ccl", timeout=timedelta(minutes=17))
+
     @pytest.mark.parametrize("valid", [False, True])
     def test_deterministic_collective_backend_is_checked_before_world_initialization(
         self, monkeypatch: pytest.MonkeyPatch, valid: bool

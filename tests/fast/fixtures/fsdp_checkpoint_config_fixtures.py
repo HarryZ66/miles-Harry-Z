@@ -26,7 +26,7 @@ def fsdp_checkpoint_sdk(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Simp
     monkeypatch.setattr(checkpoint.dist, "get_rank", lambda: 0)
     monkeypatch.setattr(checkpoint.dist, "get_world_size", lambda: 1)
     monkeypatch.setattr(checkpoint.dist, "barrier", lambda: None)
-    monkeypatch.setattr(checkpoint.torch.cuda, "synchronize", lambda: None)
+    monkeypatch.setattr(checkpoint.torch.accelerator, "synchronize", lambda *args, **kwargs: None)
     monkeypatch.setattr(checkpoint.torch.cuda, "get_rng_state_all", lambda: [])
     monkeypatch.setattr(checkpoint.torch.cuda, "is_available", lambda: False)
     model = torch.nn.Linear(2, 2)

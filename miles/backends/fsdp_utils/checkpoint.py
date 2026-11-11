@@ -13,6 +13,7 @@ from torch.distributed.checkpoint.state_dict import get_state_dict, set_state_di
 from torch.distributed.checkpoint.stateful import Stateful
 
 from miles.backends.training_utils.checkpoint.tracker import CHECKPOINT_TRACKER_FILENAME
+from miles.platforms import current_platform
 from miles.utils.audit_utils.config_snapshot.dumper import ConfigSnapshotDumper
 from miles.utils.audit_utils.config_snapshot.enabled import SNAPSHOT_TESTING_ENABLED
 
@@ -182,8 +183,8 @@ def finalize_load(actor: Any, checkpoint_payload: dict[str, Any] | None) -> None
         rng_state = checkpoint_payload["rng"]
         if "torch" in rng_state:
             torch.set_rng_state(rng_state["torch"])
-        if torch.cuda.is_available() and "cuda" in rng_state:
-            torch.cuda.set_rng_state_all(rng_state["cuda"])
+        if current_platform.device_type in rng_state:
+            current_platform.set_device_rng_state(rng_state[current_platform.device_type])
 
     metadata = checkpoint_payload.get("metadata") or {}
     iteration = checkpoint_payload.get("iteration")
@@ -197,7 +198,7 @@ def finalize_load(actor: Any, checkpoint_payload: dict[str, Any] | None) -> None
         if actor.args.start_rollout_id is None:
             actor.args.start_rollout_id = iteration
 
-    torch.cuda.synchronize()
+    torch.accelerator.synchronize()
     dist.barrier()
 
 
@@ -207,7 +208,7 @@ def save(actor: Any, iteration: int) -> None:
     Saves model weights and optimizer state to separate directories.
     This allows loading weights without optimizer or deleting optimizer before loading.
     """
-    torch.cuda.synchronize()
+    torch.accelerator.synchronize()
 
     base_dir = Path(actor.args.backend.save).expanduser()
     step_id = iteration + 1
@@ -247,7 +248,9 @@ def save(actor: Any, iteration: int) -> None:
 
     if dist.get_rank() == 0:
         rng_state = {"torch": torch.get_rng_state()}
-        rng_state["cuda"] = torch.cuda.get_rng_state_all()
+        device_rng_state = current_platform.device_rng_state()
+        if device_rng_state is not None:
+            rng_state[current_platform.device_type] = device_rng_state
         torch.save(rng_state, checkpoint_dir / "rng.pt")
 
         metadata = {

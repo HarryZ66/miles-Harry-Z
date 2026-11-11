@@ -142,6 +142,24 @@ def test_the_degree_one_axes_get_their_own_single_rank_group():
     assert (state.intra_dp.rank, state.intra_dp.size) == (3, 4)
 
 
+def test_the_fsdp_mesh_is_built_on_the_platform_device():
+    """A Neuron trainer shards over neuron devices; a hard-coded cuda mesh would fail there."""
+    with (
+        patch(f"{_FSDP_PARALLEL_MODULE}.dist") as dist,
+        patch(
+            f"{_FSDP_PARALLEL_MODULE}.build_fsdp_meshes", return_value={"dp": MagicMock(), "fsdp": MagicMock()}
+        ) as build_fsdp_meshes,
+        patch(f"{_FSDP_PARALLEL_MODULE}.get_gloo_group", return_value=object()),
+        patch.object(GroupInfo, "_verify_group", lambda self, group, name: None),
+        patch.object(parallel_module.current_platform, "device_type", "neuron"),
+    ):
+        dist.get_world_size.return_value = 2
+        dist.get_rank.return_value = 0
+        parallel_module.create_fsdp_parallel_state(Namespace(backend=Namespace(dp_replicate_size=1)))
+
+    assert build_fsdp_meshes.call_args.kwargs["device_type"] == "neuron"
+
+
 class TestTrainParallelConfig:
     def test_live_cell_count_and_pipeline_layout_are_derived_after_reconfiguration(self) -> None:
         """The next config reflects three live cells and the current CP and VPP layout."""

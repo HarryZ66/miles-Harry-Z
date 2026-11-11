@@ -129,6 +129,35 @@ class TestFSDPModelInputs:
         assert model_args["max_length_q"] == 3
 
 
+class TestFSDPDeviceNeutralModelMoves:
+    def test_ref_context_parks_and_restores_the_policy_without_torch_cuda(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The policy leaves the device for the reference forward and returns to the platform device afterwards."""
+        actor = object.__new__(actor_module.FSDPTrainRayActor)
+        actor.model = torch.nn.Linear(2, 1)
+        actor.ref_model = torch.nn.Linear(2, 1)
+        actor.optimizer_cpu_offload = False
+        moved_to, emptied = [], []
+        actor.model.to = lambda device: moved_to.append(device)
+        monkeypatch.setattr(actor_module.current_platform, "current_device", lambda: torch.device("cpu"))
+        monkeypatch.setattr(actor_module.torch.accelerator, "empty_cache", lambda: emptied.append(True))
+        monkeypatch.setattr(actor_module.torch.cuda, "empty_cache", _fail_on_cuda)
+        monkeypatch.setattr(torch.nn.Module, "cuda", _fail_on_cuda)
+        monkeypatch.setattr(actor_module.dist, "barrier", lambda **_kwargs: None)
+        monkeypatch.setattr(actor_module, "get_gloo_group", lambda: None)
+
+        with actor._ref_context():
+            assert not actor.ref_model.training
+
+        assert emptied == [True, True]
+        assert moved_to == [torch.device("cpu")]
+
+
+def _fail_on_cuda(*args: object, **kwargs: object) -> None:
+    raise AssertionError("the FSDP backend must not use torch.cuda")
+
+
 class TestFSDPTrainParallelConfigWiring:
     def test_init_derives_a_config_without_schedule_support_and_train_forwards_it(
         self,

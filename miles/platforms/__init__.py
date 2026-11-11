@@ -44,6 +44,15 @@ class Platform:
     def current_device(self) -> torch.device:
         return torch.device(self.device_type, torch.accelerator.current_device_index())
 
+    def device_rng_state(self) -> list[torch.Tensor] | None:
+        """Each local device's RNG state, saved with a checkpoint; None where the platform exposes none."""
+        return torch.cuda.get_rng_state_all()
+
+    def set_device_rng_state(self, state: list[torch.Tensor]) -> None:
+        # a checkpoint saved on GPUs can be loaded on a host without one, e.g. by a CPU test
+        if torch.cuda.is_available():
+            torch.cuda.set_rng_state_all(state)
+
     @functools.cache  # noqa: B019 -- one instance per process
     def device_name(self) -> str | None:
         """The CUDA device's marketing name (for peak-FLOPs lookup); None without a CUDA device."""

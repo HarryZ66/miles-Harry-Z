@@ -39,3 +39,7 @@ class NeuronPlatform(Platform):
 
     def device_name(self) -> str | None:
         return None
+
+    def device_rng_state(self) -> list[torch.Tensor] | None:
+        # unverified whether torch_neuronx exposes per-core RNG state; a checkpoint keeps only the CPU RNG
+        return None
